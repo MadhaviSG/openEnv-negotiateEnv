@@ -2,24 +2,22 @@
 
 import random
 from typing import Any, Optional
-from uuid import uuid4
 
-from openenv.core.env_server.interfaces import Environment
-from openenv.core.env_server.types import State
+from openenv.core.env_server import Environment
 
 from negotiate_env.models import NegotiateAction, NegotiateObservation
 from negotiate_env.scenarios import SCENARIOS
 from negotiate_env.server.opponent import AEOpponent
 
 
-class NegotiateEnvironment(Environment[NegotiateAction, NegotiateObservation, State]):
+class NegotiateEnvironment(Environment):
     """RL environment: agent (procurement manager) negotiates with rule-based AE."""
 
-    SUPPORTS_CONCURRENT_SESSIONS: bool = True
+    SUPPORTS_CONCURRENT_SESSIONS: bool = False
 
     def __init__(self):
         super().__init__()
-        self._state: State = State(episode_id="", step_count=0)
+        self._step_count: int = 0
         self._scenario: dict[str, Any] = {}
         self._opponent: Optional[AEOpponent] = None
         self._vendor_floor_price: float = 0.0
@@ -80,11 +78,8 @@ class NegotiateEnvironment(Environment[NegotiateAction, NegotiateObservation, St
         self._active_constraints = []
         self._drift_injected = False
         self._turn_penalties = 0.0
+        self._step_count = 0
 
-        self._state = State(
-            episode_id=episode_id or str(uuid4()),
-            step_count=0,
-        )
         opening_msg = self._scenario["vendor_opening_message"]
         self._conversation_history.append(f"AE: {opening_msg}")
 
@@ -109,8 +104,8 @@ class NegotiateEnvironment(Environment[NegotiateAction, NegotiateObservation, St
         timeout_s: Optional[float] = None,
         **kwargs: Any,
     ) -> NegotiateObservation:
-        self._state.step_count += 1
-        turn = self._state.step_count
+        self._step_count += 1
+        turn = self._step_count
         self._turn_penalties += 0.01
 
         # Inject drift exactly once at drift_turn
@@ -148,7 +143,7 @@ class NegotiateEnvironment(Environment[NegotiateAction, NegotiateObservation, St
                     done=True,
                     reward=reward,
                 )
-            # Invalid accept — AE counter-offers below their floor threshold
+            # Invalid accept — AE counter-offers because their standing offer is below floor threshold
             ae_msg, self._current_offer = self._opponent.respond(
                 action, turn, self._conversation_history, self._current_offer
             )
@@ -214,7 +209,7 @@ class NegotiateEnvironment(Environment[NegotiateAction, NegotiateObservation, St
             your_max_cap=self._agent_max_cap,
             ae_message=ae_message,
             conversation_history=list(self._conversation_history),
-            turn_number=self._state.step_count,
+            turn_number=self._step_count,
             max_turns=self._max_turns,
             active_constraints=list(self._active_constraints),
             current_offer=dict(self._current_offer),
@@ -247,5 +242,6 @@ class NegotiateEnvironment(Environment[NegotiateAction, NegotiateObservation, St
         return round(max(0.0, raw - self._turn_penalties), 4)
 
     @property
-    def state(self) -> State:
-        return self._state
+    def state(self) -> dict[str, Any]:
+        """Minimal state dict; openenv base class marks this abstract."""
+        return {"step_count": self._step_count}

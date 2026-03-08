@@ -1,19 +1,25 @@
-"""Synchronous HTTP client for NegotiateEnv server.
+"""Synchronous WebSocket client for NegotiateEnv server.
 
-Connects via REST to the NegotiateEnv FastAPI server, formats observations
-as LLM prompts, and parses LLM text output into NegotiateAction objects.
+Connects via persistent WebSocket to the NegotiateEnv FastAPI server,
+formats observations as LLM prompts, and parses LLM text output into
+NegotiateAction objects.
 """
 
 import json
 import re
+from typing import Any, Dict
 
-import requests
+from openenv.core.env_client import EnvClient
+from openenv.core.client_types import StepResult
 
 from negotiate_env.models import NegotiateAction, NegotiateObservation
 
 
-class NegotiateEnvClient:
-    """Synchronous client for the NegotiateEnv server.
+class NegotiateEnvClient(EnvClient[NegotiateAction, NegotiateObservation, Dict[str, Any]]):
+    """Synchronous WebSocket client for the NegotiateEnv server.
+
+    Maintains a persistent WebSocket connection so state is shared across
+    reset() and step() calls (required for stateful multi-turn negotiation).
 
     Example:
         env = NegotiateEnvClient("http://localhost:7860")
@@ -21,39 +27,64 @@ class NegotiateEnvClient:
         while not obs.done:
             action = env.parse_llm_output_to_action(llm_response)
             obs = env.step(action)
+        env.close()
     """
 
-    def __init__(self, base_url: str = "http://localhost:7860", timeout: int = 30):
-        self.base_url = base_url.rstrip("/")
-        self.timeout = timeout
-        self._session = requests.Session()
+    # ------------------------------------------------------------------
+    # EnvClient abstract interface
+    # ------------------------------------------------------------------
+
+    def _step_payload(self, action: NegotiateAction) -> Dict[str, Any]:
+        """Serialize NegotiateAction to the dict the server expects."""
+        return action.model_dump()
+
+    def _parse_result(self, payload: Dict[str, Any]) -> StepResult[NegotiateObservation]:
+        """
+        Parse server WebSocket response into a typed StepResult.
+
+        serialize_observation() puts fields into:
+          {"observation": {all fields except reward/done/metadata},
+           "reward": float|None,
+           "done": bool}
+
+        We merge reward and done back into the obs dict so NegotiateObservation
+        validates cleanly (it inherits those fields from Observation).
+        """
+        obs_data = payload.get("observation", {})
+        reward = payload.get("reward") or 0.0
+        done = bool(payload.get("done", False))
+        full_obs_data = {**obs_data, "reward": reward, "done": done}
+        obs = NegotiateObservation.model_validate(full_obs_data)
+        return StepResult(observation=obs, reward=reward, done=done)
+
+    def _parse_state(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        return payload
+
+    # ------------------------------------------------------------------
+    # Public API — returns NegotiateObservation directly (not StepResult)
+    # ------------------------------------------------------------------
 
     def reset(self, **kwargs) -> NegotiateObservation:
-        """Reset the environment and return the initial observation."""
-        resp = self._session.post(
-            f"{self.base_url}/reset",
-            json=kwargs,
-            timeout=self.timeout,
-        )
-        resp.raise_for_status()
-        data = resp.json()
-        obs_data = data.get("observation", data)
-        return NegotiateObservation.model_validate(obs_data)
+        """Reset the environment and return the initial observation.
 
-    def step(self, action: NegotiateAction) -> NegotiateObservation:
+        Auto-connects the WebSocket on first call if not already connected.
+        """
+        if self._ws is None:
+            self.connect()
+        result = super().reset(**kwargs)
+        return result.observation
+
+    def step(self, action: NegotiateAction, **kwargs) -> NegotiateObservation:
         """Send an action and return the resulting observation."""
-        payload = action.model_dump()
-        resp = self._session.post(
-            f"{self.base_url}/step",
-            json={"action": payload},
-            timeout=self.timeout,
-        )
-        resp.raise_for_status()
-        data = resp.json()
-        obs_data = data.get("observation", data)
-        return NegotiateObservation.model_validate(obs_data)
+        result = super().step(action, **kwargs)
+        return result.observation
 
-    def format_observation_as_prompt(self, obs: NegotiateObservation) -> str:
+    # ------------------------------------------------------------------
+    # Prompt formatting and LLM output parsing (static — no server needed)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def format_observation_as_prompt(obs: NegotiateObservation) -> str:
         """Format observation into a clean LLM-readable negotiation state string."""
         turns_remaining = obs.max_turns - obs.turn_number
         current = obs.current_offer
@@ -97,7 +128,8 @@ class NegotiateEnvClient:
         ]
         return "\n".join(lines)
 
-    def parse_llm_output_to_action(self, text: str) -> NegotiateAction:
+    @staticmethod
+    def parse_llm_output_to_action(text: str) -> NegotiateAction:
         """Parse LLM text output into a NegotiateAction.
 
         Tries JSON first, then regex extraction, then falls back to a safe default.
@@ -108,7 +140,7 @@ class NegotiateEnvClient:
         try:
             data = json.loads(text)
             return NegotiateAction(**{k: v for k, v in data.items() if k in NegotiateAction.model_fields})
-        except (json.JSONDecodeError, Exception):
+        except Exception:
             pass
 
         # 2) Try to extract JSON object with regex
@@ -117,7 +149,7 @@ class NegotiateEnvClient:
             try:
                 data = json.loads(match.group())
                 return NegotiateAction(**{k: v for k, v in data.items() if k in NegotiateAction.model_fields})
-            except (json.JSONDecodeError, Exception):
+            except Exception:
                 pass
 
         # 3) Heuristic extraction
@@ -147,7 +179,6 @@ class NegotiateEnvClient:
             if 0.0 <= candidate <= 15.0:
                 cap = candidate
 
-        # 4) Fall back to safe default counter
         return NegotiateAction(
             action_type=action_type,
             price_per_seat=price,
@@ -155,3 +186,21 @@ class NegotiateEnvClient:
             annual_increase_cap=cap,
             message=text[:200],
         )
+
+    # Back-compat alias
+    def parse_llm_response_to_action(self, text: str) -> NegotiateAction:
+        return self.parse_llm_output_to_action(text)
+
+
+# ---------------------------------------------------------------------------
+# Module-level helpers imported by run_agent.py and train scripts
+# ---------------------------------------------------------------------------
+
+def observation_to_prompt(obs: NegotiateObservation) -> str:
+    """Format a NegotiateObservation as an LLM-readable prompt (module-level)."""
+    return NegotiateEnvClient.format_observation_as_prompt(obs)
+
+
+def parse_llm_response_to_action(text: str) -> NegotiateAction:
+    """Parse LLM text output into a NegotiateAction (module-level alias)."""
+    return NegotiateEnvClient.parse_llm_output_to_action(text)

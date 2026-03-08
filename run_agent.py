@@ -91,8 +91,7 @@ def run_agent(scenario_id: str = None, max_turns: int = 10):
     print("Starting negotiation episode...")
     print("=" * 60)
 
-    result = env.reset(**reset_kwargs)
-    obs = result.observation
+    obs = env.reset(**reset_kwargs)
 
     print(f"\nScenario context:\n{obs.context}\n")
     print(f"Your constraints: max price=${obs.your_max_price:.2f}, "
@@ -121,8 +120,7 @@ def run_agent(scenario_id: str = None, max_turns: int = 10):
               f"price=${action.price_per_seat} length={action.contract_length}y "
               f"cap={action.annual_increase_cap}% | msg: {action.message[:80]}")
 
-        result = env.step(action)
-        obs = result.observation
+        obs = env.step(action)
         total_reward = obs.reward
 
         print(f"AE response: {obs.ae_message}")

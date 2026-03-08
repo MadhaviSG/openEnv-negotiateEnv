@@ -2,7 +2,7 @@
 
 from typing import Any
 
-from openenv_core import Action, Observation
+from openenv.core.env_server import Action, Observation
 
 
 class NegotiateAction(Action):

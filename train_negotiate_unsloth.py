@@ -26,6 +26,7 @@ import json
 import re
 
 import requests
+import torch
 from datasets import Dataset
 from trl import GRPOConfig, GRPOTrainer
 
@@ -44,6 +45,13 @@ parser.add_argument("--output-dir", default="negotiate-unsloth-output")
 parser.add_argument("--lora-rank", type=int, default=16)
 parser.add_argument("--max-seq-length", type=int, default=1024)
 cli_args = parser.parse_args()
+
+# ---------------------------------------------------------------------------
+# Module-level globals — set in main() before training begins
+# ---------------------------------------------------------------------------
+
+model = None      # FastLanguageModel instance; available to reward function
+tokenizer = None  # tokenizer instance; available to reward function
 
 # ---------------------------------------------------------------------------
 # System prompt (same as TRL script for consistency)
@@ -166,46 +174,97 @@ def parse_to_action(text: str) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Reward function — runs a full episode from the model's first action
+# Reward function — runs a FULL multi-turn episode using model generations
 # ---------------------------------------------------------------------------
 
 def reward_negotiate(completions: list[str], prompts: list[str], **kwargs) -> list[float]:
     """
-    For each completion (LLM's first action):
-      1. Reset the environment to a fresh episode
-      2. Send the model's action
-      3. Continue with 'probe' actions for remaining turns
-      4. Return final episode reward
+    For each completion produced by GRPO's rollout:
+      1. Reset the environment to a fresh episode.
+      2. Turn 0: parse the pre-generated completion as the first action.
+      3. Turns 1+: call model.generate for every subsequent turn so ALL turns
+         use the model's current policy (not dummy probe actions).
+      4. Return the final episode reward as the training signal.
 
-    This gives the model a meaningful reward signal for its negotiation strategy.
+    This ensures the reward reflects the model's full negotiation strategy,
+    not just its first move.
     """
+    if model is None or tokenizer is None:
+        # model not yet loaded (e.g. import-time check)
+        return [0.0] * len(completions)
+
     rewards = []
-    for completion in completions:
-        try:
-            obs = env_reset(cli_args.env_url)
-            if obs.get("done", False):
-                rewards.append(0.0)
-                continue
+    was_training = model.training
+    model.eval()
 
-            action = parse_to_action(completion)
-            obs = env_step(cli_args.env_url, action)
-
-            # Continue episode with probe actions to get to a terminal state
-            for _ in range(cli_args.max_turns - 1):
+    try:
+        for completion in completions:
+            try:
+                obs = env_reset(cli_args.env_url)
                 if obs.get("done", False):
-                    break
-                obs = env_step(cli_args.env_url, {
-                    "action_type": "probe",
-                    "price_per_seat": 0.0,
-                    "contract_length": 0.0,
-                    "annual_increase_cap": 0.0,
-                    "message": "",
-                })
+                    rewards.append(0.0)
+                    continue
 
-            rewards.append(float(obs.get("reward", 0.0)))
-        except Exception as e:
-            print(f"[warn] Episode failed: {e}")
-            rewards.append(0.0)
+                final_reward = 0.0
+
+                # Turn 0: use GRPO's pre-generated completion so its gradient matters
+                action = parse_to_action(completion)
+                obs = env_step(cli_args.env_url, action)
+                if obs.get("done", False):
+                    final_reward = float(obs.get("reward", 0.0))
+                    rewards.append(final_reward)
+                    continue
+
+                # Turns 1+: generate fresh completions with model.generate
+                for _turn in range(1, cli_args.max_turns):
+                    if obs.get("done", False):
+                        final_reward = float(obs.get("reward", 0.0))
+                        break
+
+                    user_content = obs_to_prompt(obs)
+                    messages = [
+                        {"role": "system", "content": SYSTEM_PROMPT},
+                        {"role": "user", "content": user_content},
+                    ]
+                    prompt_text = tokenizer.apply_chat_template(
+                        messages,
+                        add_generation_prompt=True,
+                        tokenize=False,
+                    )
+                    inputs = tokenizer(
+                        prompt_text,
+                        return_tensors="pt",
+                        truncation=True,
+                        max_length=cli_args.max_seq_length - 256,
+                    ).to(model.device)
+
+                    with torch.no_grad():
+                        output_ids = model.generate(
+                            **inputs,
+                            max_new_tokens=256,
+                            do_sample=True,
+                            temperature=0.7,
+                            pad_token_id=tokenizer.eos_token_id,
+                        )
+
+                    new_token_ids = output_ids[0][inputs["input_ids"].shape[1]:]
+                    completion_text = tokenizer.decode(new_token_ids, skip_special_tokens=True)
+
+                    action = parse_to_action(completion_text)
+                    obs = env_step(cli_args.env_url, action)
+
+                    if obs.get("done", False):
+                        final_reward = float(obs.get("reward", 0.0))
+
+                rewards.append(final_reward)
+
+            except Exception as e:
+                print(f"[warn] Episode failed: {e}")
+                rewards.append(0.0)
+
+    finally:
+        if was_training:
+            model.train()
 
     return rewards
 
@@ -246,6 +305,8 @@ def build_dataset(env_url: str, n: int, tokenizer) -> Dataset:
 # ---------------------------------------------------------------------------
 
 def main() -> None:
+    global model, tokenizer
+
     # ------------------------------------------------------------------
     # 1. Load model with Unsloth 4-bit (works on T4 / any GPU >= 8 GB)
     # ------------------------------------------------------------------

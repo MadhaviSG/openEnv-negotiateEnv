@@ -240,7 +240,7 @@ def main():
         model=model,
         args=training_args,
         train_dataset=dataset,
-        tokenizer=tokenizer,
+        processing_class=tokenizer,  # Fixed: was tokenizer=tokenizer
         dataset_text_field="text",
     )
     

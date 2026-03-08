@@ -4,3 +4,6 @@ from negotiate_env.models import NegotiateAction, NegotiateObservation
 from negotiate_env.server.environment import NegotiateEnvironment
 
 __all__ = ["NegotiateEnvironment", "NegotiateAction", "NegotiateObservation"]
+
+# Convenience: allow `NegotiateEnv(difficulty="hard")` as an alias
+NegotiateEnv = NegotiateEnvironment

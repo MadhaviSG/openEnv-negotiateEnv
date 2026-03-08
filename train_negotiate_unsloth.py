@@ -24,11 +24,22 @@ Run:
 import argparse
 import json
 import re
+import time
 
 import requests
 import torch
 from datasets import Dataset
-from trl import GRPOConfig, GRPOTrainer
+
+# Try to import GRPO, fall back to older TRL if not available
+try:
+    from trl import GRPOConfig, GRPOTrainer
+    HAS_GRPO = True
+except ImportError:
+    HAS_GRPO = False
+    print("[WARN] GRPOConfig not found in TRL. Please install TRL >= 0.11.0")
+    print("Run: pip install --upgrade 'trl>=0.11.0'")
+    import sys
+    sys.exit(1)
 
 # ---------------------------------------------------------------------------
 # CLI
@@ -72,20 +83,42 @@ Always respond with valid JSON only."""
 # ---------------------------------------------------------------------------
 
 def env_reset(env_url: str, scenario_id: str | None = None) -> dict:
-    payload = {}
-    if scenario_id:
-        payload["scenario_id"] = scenario_id
-    r = requests.post(f"{env_url}/reset", json=payload, timeout=30)
-    r.raise_for_status()
-    data = r.json()
-    return data.get("observation", data)
+    max_retries = 3
+    retry_delay = 2
+    
+    for attempt in range(max_retries):
+        try:
+            payload = {}
+            if scenario_id:
+                payload["scenario_id"] = scenario_id
+            r = requests.post(f"{env_url}/reset", json=payload, timeout=30)
+            r.raise_for_status()
+            data = r.json()
+            return data.get("observation", data)
+        except Exception as e:
+            if attempt < max_retries - 1:
+                print(f"[warn] Reset failed (attempt {attempt+1}/{max_retries}): {e}")
+                time.sleep(retry_delay)
+            else:
+                raise
 
 
 def env_step(env_url: str, action: dict) -> dict:
-    r = requests.post(f"{env_url}/step", json={"action": action}, timeout=30)
-    r.raise_for_status()
-    data = r.json()
-    return data.get("observation", data)
+    max_retries = 3
+    retry_delay = 2
+    
+    for attempt in range(max_retries):
+        try:
+            r = requests.post(f"{env_url}/step", json={"action": action}, timeout=30)
+            r.raise_for_status()
+            data = r.json()
+            return data.get("observation", data)
+        except Exception as e:
+            if attempt < max_retries - 1:
+                print(f"[warn] Step failed (attempt {attempt+1}/{max_retries}): {e}")
+                time.sleep(retry_delay)
+            else:
+                raise
 
 
 def obs_to_prompt(obs: dict) -> str:
@@ -308,6 +341,22 @@ def main() -> None:
     global model, tokenizer
 
     # ------------------------------------------------------------------
+    # 0. Check environment server is accessible
+    # ------------------------------------------------------------------
+    print(f"[NegotiateEnv/Unsloth] Checking environment server at {cli_args.env_url}...")
+    try:
+        # Test with a reset call instead of health endpoint
+        r = requests.post(f"{cli_args.env_url}/reset", json={}, timeout=10)
+        r.raise_for_status()
+        print(f"[NegotiateEnv/Unsloth] Environment server is accessible!")
+    except Exception as e:
+        print(f"[ERROR] Cannot reach environment server: {e}")
+        print(f"[ERROR] Please check that {cli_args.env_url} is running")
+        print(f"[ERROR] You may need to restart your HF Space if it's sleeping")
+        import sys
+        sys.exit(1)
+
+    # ------------------------------------------------------------------
     # 1. Load model with Unsloth 4-bit (works on T4 / any GPU >= 8 GB)
     # ------------------------------------------------------------------
     from unsloth import FastLanguageModel  # imported here so the file is importable without unsloth
@@ -339,6 +388,18 @@ def main() -> None:
     )
 
     # ------------------------------------------------------------------
+    # 2.5. Patch model to add warnings_issued attribute (TRL compatibility)
+    # ------------------------------------------------------------------
+    # TRL's GRPOTrainer expects model.warnings_issued but PEFT models don't have it
+    if not hasattr(model, "warnings_issued"):
+        model.warnings_issued = {}
+    # Also patch the base model
+    if hasattr(model, "base_model") and not hasattr(model.base_model, "warnings_issued"):
+        model.base_model.warnings_issued = {}
+    if hasattr(model, "base_model") and hasattr(model.base_model, "model") and not hasattr(model.base_model.model, "warnings_issued"):
+        model.base_model.model.warnings_issued = {}
+
+    # ------------------------------------------------------------------
     # 3. Build dataset (each entry = one fresh env observation as prompt)
     # ------------------------------------------------------------------
     print(f"[NegotiateEnv/Unsloth] Building dataset ({cli_args.num_episodes} episodes)...")
@@ -358,7 +419,7 @@ def main() -> None:
         learning_rate=5e-6,
         logging_steps=5,
         save_steps=50,
-        fp16=True,                          # T4 doesn't support bf16
+        bf16=True,                          # Use bf16 to avoid dtype mismatches
         report_to="none",
     )
 

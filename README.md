@@ -422,7 +422,7 @@ B2B SaaS procurement is a real enterprise workflow. The environment models the a
 ---
 
 ## Team
-
+- Madhavi Gulavani — [MadhaviSG]([https://github.com/mayuka-reddy](https://github.com/MadhaviSG)) · madhavisgulavani@gmail.com
 - Mayuka Reddy — [mayuka-reddy](https://github.com/mayuka-reddy) · mayukareddy10@gmail.com
 - Kushal Adhyaru — [kushal511](https://github.com/kushal511) · kushaladhyaru5112001@gmail.com
 

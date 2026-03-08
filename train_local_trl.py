@@ -256,7 +256,7 @@ def main():
         model=model,
         args=training_args,
         train_dataset=dataset,
-        tokenizer=tokenizer,
+        processing_class=tokenizer,  # Changed from tokenizer to processing_class
         dataset_text_field="text",
     )
     

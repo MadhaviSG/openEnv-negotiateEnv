@@ -10,3 +10,5 @@ build/
 negotiate-grpo-output/
 *.pt
 *.safetensors
+hf_space/
+colab_training.ipynb

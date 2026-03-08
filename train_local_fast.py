@@ -173,9 +173,9 @@ def build_training_data(num_episodes: int) -> list[dict]:
         weight = max(0.1, reward)
         
         for prompt, response in zip(prompts, responses):
+            # Format for newer TRL: use full text
             training_examples.append({
                 "text": prompt + response,
-                "weight": weight,
             })
         
         if (ep + 1) % 25 == 0:  # Report every 25 episodes
@@ -197,6 +197,10 @@ def main():
     # Collect training data
     training_data = build_training_data(args.num_episodes)
     dataset = Dataset.from_list(training_data)
+    
+    # Format dataset for SFTTrainer
+    def formatting_func(example):
+        return example["text"]
     
     # Load model for training
     print("\nLoading model for training...")
@@ -235,13 +239,13 @@ def main():
         report_to="none",
     )
     
-    # Trainer
+    # Trainer (newer TRL API)
     trainer = SFTTrainer(
         model=model,
         args=training_args,
         train_dataset=dataset,
-        processing_class=tokenizer,  # Fixed: was tokenizer=tokenizer
-        dataset_text_field="text",
+        processing_class=tokenizer,
+        formatting_func=formatting_func,
     )
     
     print("\nStarting training...")

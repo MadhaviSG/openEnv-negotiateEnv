@@ -9,7 +9,7 @@ from negotiate_env.client.negotiate_env_client import (
     parse_llm_response_to_action,
 )
 
-BASE_URL = "http://127.0.0.1:8000"
+BASE_URL = "http://127.0.0.1:7860"
 MODEL = "gpt-4o-mini"
 
 SYSTEM_PROMPT = """\

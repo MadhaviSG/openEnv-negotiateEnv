@@ -1,15 +1,31 @@
 # NegotiateEnv — OpenEnv-compatible B2B SaaS negotiation environment
 # Exposes port 7860 for HuggingFace Spaces.
-# Build from repo root: docker build -f negotiate_env/server/Dockerfile .
 
+FROM python:3.11-slim AS builder
+
+# Install uv
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
+
+WORKDIR /app/env
+
+# Copy dependency files first (layer caching)
+COPY pyproject.toml .
+COPY negotiate_env/ negotiate_env/
+
+# Install dependencies into a venv using uv
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv sync --no-editable
+
+# Final runtime stage
 FROM python:3.11-slim
 
 WORKDIR /app
 
-COPY . .
+COPY --from=builder /app/env/.venv /app/.venv
+COPY --from=builder /app/env /app/env
 
-RUN pip install --no-cache-dir openenv-core>=0.2.1 fastapi uvicorn pydantic && \
-    pip install --no-cache-dir -e .
+ENV PATH="/app/.venv/bin:$PATH"
+ENV PYTHONPATH="/app/env:$PYTHONPATH"
 
 EXPOSE 7860
 

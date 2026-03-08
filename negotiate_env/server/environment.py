@@ -13,7 +13,7 @@ from negotiate_env.server.opponent import AEOpponent
 class NegotiateEnvironment(Environment):
     """RL environment: agent (procurement manager) negotiates with rule-based AE."""
 
-    SUPPORTS_CONCURRENT_SESSIONS: bool = False
+    SUPPORTS_CONCURRENT_SESSIONS: bool = True
 
     def __init__(self):
         super().__init__()

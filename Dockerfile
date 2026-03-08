@@ -25,5 +25,5 @@ EXPOSE 7860
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
     CMD python -c "import requests; requests.get('http://localhost:7860/health')"
 
-# Start the FastAPI server with wrapper (fixes /step endpoint)
-CMD ["uvicorn", "negotiate_env.server.app_wrapper:app", "--host", "0.0.0.0", "--port", "7860"]
+# Start the FastAPI server (with session management fix)
+CMD ["uvicorn", "negotiate_env.server.app:app", "--host", "0.0.0.0", "--port", "7860"]

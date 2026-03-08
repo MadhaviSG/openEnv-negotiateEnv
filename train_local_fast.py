@@ -18,9 +18,9 @@ from negotiate_env.models import NegotiateAction
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--model-id", default="Qwen/Qwen2.5-1.5B-Instruct")
-parser.add_argument("--num-episodes", type=int, default=200)  # Reduced from 500
+parser.add_argument("--num-episodes", type=int, default=500)  # Restored to 500
 parser.add_argument("--output-dir", default="negotiate-trl-output")
-parser.add_argument("--max-turns", type=int, default=6)  # Reduced from 10
+parser.add_argument("--max-turns", type=int, default=10)  # Restored to 10
 args = parser.parse_args()
 
 SYSTEM_PROMPT = """You are an expert procurement manager negotiating a B2B SaaS contract.
@@ -99,7 +99,7 @@ def parse_to_action(text: str) -> NegotiateAction:
 
 
 def run_episode(env: NegotiateEnvironment, model, tokenizer) -> tuple[list[str], list[str], float]:
-    """Run one episode - simplified for speed."""
+    """Run one episode."""
     prompts = []
     responses = []
     
@@ -119,13 +119,13 @@ def run_episode(env: NegotiateEnvironment, model, tokenizer) -> tuple[list[str],
             messages, add_generation_prompt=True, tokenize=False
         )
         
-        # Generate response (faster settings)
-        inputs = tokenizer(prompt_text, return_tensors="pt", truncation=True, max_length=512).to(model.device)
+        # Generate response
+        inputs = tokenizer(prompt_text, return_tensors="pt", truncation=True, max_length=1024).to(model.device)
         
         with torch.no_grad():
             output_ids = model.generate(
                 **inputs,
-                max_new_tokens=128,  # Reduced from 256
+                max_new_tokens=256,
                 do_sample=True,
                 temperature=0.7,
                 pad_token_id=tokenizer.eos_token_id,
@@ -146,8 +146,8 @@ def run_episode(env: NegotiateEnvironment, model, tokenizer) -> tuple[list[str],
 
 
 def build_training_data(num_episodes: int) -> list[dict]:
-    """Collect episodes - optimized for speed."""
-    print(f"Collecting {num_episodes} episodes (fast mode)...")
+    """Collect episodes with better data collection."""
+    print(f"Collecting {num_episodes} episodes...")
     
     # Load model for data collection
     tokenizer = AutoTokenizer.from_pretrained(args.model_id)
@@ -178,7 +178,7 @@ def build_training_data(num_episodes: int) -> list[dict]:
                 "text": prompt + response,
             })
         
-        if (ep + 1) % 25 == 0:  # Report every 25 episodes
+        if (ep + 1) % 50 == 0:  # Report every 50 episodes
             avg_reward = total_reward / (ep + 1)
             print(f"Episode {ep+1}/{num_episodes}: avg_reward={avg_reward:.4f}")
     
@@ -189,10 +189,10 @@ def build_training_data(num_episodes: int) -> list[dict]:
 
 
 def main():
-    print(f"[Fast Training] Local environment")
+    print(f"[Local Training] TRL with better data collection")
     print(f"Model: {args.model_id}")
-    print(f"Episodes: {args.num_episodes} (reduced for speed)")
-    print(f"Max turns: {args.max_turns} (reduced for speed)")
+    print(f"Episodes: {args.num_episodes}")
+    print(f"Max turns: {args.max_turns}")
     
     # Collect training data
     training_data = build_training_data(args.num_episodes)
@@ -214,28 +214,28 @@ def main():
         device_map="auto",
     )
     
-    # Add LoRA (smaller for speed)
+    # Add LoRA
     lora_config = LoraConfig(
-        r=8,  # Reduced from 16
-        lora_alpha=8,
-        target_modules=["q_proj", "k_proj", "v_proj", "o_proj"],  # Fewer modules
+        r=16,  # Restored from 8
+        lora_alpha=16,
+        target_modules=["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"],
         lora_dropout=0.05,
         bias="none",
         task_type="CAUSAL_LM",
     )
     model = get_peft_model(model, lora_config)
     
-    # Training arguments (faster)
+    # Training arguments
     training_args = TrainingArguments(
         output_dir=args.output_dir,
-        num_train_epochs=2,  # Reduced from 3
-        per_device_train_batch_size=8,  # Increased from 4
-        gradient_accumulation_steps=2,  # Reduced from 4
+        num_train_epochs=3,  # Restored from 2
+        per_device_train_batch_size=4,  # Restored from 8
+        gradient_accumulation_steps=4,  # Restored from 2
         learning_rate=2e-5,
         bf16=True,
-        logging_steps=20,
-        save_steps=200,
-        save_total_limit=1,
+        logging_steps=10,  # More frequent logging
+        save_steps=100,
+        save_total_limit=2,
         report_to="none",
     )
     

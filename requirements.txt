@@ -1,0 +1,17 @@
+# Core environment (server + client)
+openenv-core>=0.2.1
+fastapi
+uvicorn
+pydantic>=2.0
+requests
+
+# --- Training option A: TRL + vLLM (requires H100, recommended for Northflank) ---
+trl>=0.29.0
+transformers>=4.50.0
+datasets
+torch
+vllm
+
+# --- Training option B: Unsloth (runs on FREE Colab T4, 4-bit LoRA) ---
+# pip install "unsloth[colab-new]" trl datasets requests
+# (Unsloth manages its own torch/transformers versions — install separately in Colab)
